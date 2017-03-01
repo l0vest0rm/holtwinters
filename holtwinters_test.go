@@ -23,7 +23,7 @@ import (
     "fmt"
 )
 
-func TestPopTimeout(t *testing.T) {
+func TestForecast(t *testing.T) {
     y := []float64{362, 385, 432, 341, 382, 409, 498, 387, 473, 513,
         582, 474, 544, 582, 681, 557, 628, 707, 773, 592, 627, 725,
         854, 661}
@@ -35,7 +35,7 @@ func TestPopTimeout(t *testing.T) {
     gamma := 0.6
 
     this := NewTripleExponentialSmoothing()
-    this.Train(y, alpha, beta, gamma, l, m)
+    this.Train(y, alpha, beta, gamma, l)
     prediction := this.Forecast(m)
     fmt.Printf("%v\n",prediction)
     expected := [...]float64{599.1184450128665, 733.227872348479, 949.0708357438998,

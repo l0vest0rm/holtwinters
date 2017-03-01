@@ -42,7 +42,7 @@ func NewTripleExponentialSmoothing() *TripleExponentialSmoothing {
     return &TripleExponentialSmoothing{}
 }
 
-func (t *TripleExponentialSmoothing) Train(y []float64, alpha, beta, gamma float64, l int, m int){
+func (t *TripleExponentialSmoothing) Train(y []float64, alpha, beta, gamma float64, l int){
     t.y = y
     t.ylen = len(y)
     t.bufSize = 2*l

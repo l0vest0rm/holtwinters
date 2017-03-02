@@ -18,6 +18,11 @@
 
 package holtwinters
 
+import(
+    "sync"
+    "log"
+    "math"
+)
 
 // Package holtwinters import http://www.itl.nist.gov/div898/handbook/pmc/section4/pmc435.htm
 // st[i] = alpha * y[i] / it[i - period] + (1.0 - alpha) * (st[i - 1] + bt[i - 1])
@@ -26,42 +31,43 @@ package holtwinters
 // ft[i + m] = (st[i] + (m * bt[i])) * it[i - period + m]
 
 type TripleExponentialSmoothing struct {
+    mu sync.RWMutex
+    mse float64
     alpha float64
     beta float64
     gamma float64
-    y []float64
     ylen int
     bufSize int
     st []float64
     bt []float64
     it []float64
+    ft []float64
     l int
 }
 
-func NewTripleExponentialSmoothing() *TripleExponentialSmoothing {
-    return &TripleExponentialSmoothing{}
-}
-
-func (t *TripleExponentialSmoothing) Train(y []float64, alpha, beta, gamma float64, l int){
-    t.y = y
-    t.ylen = len(y)
+func NewTripleExponentialSmoothing(l int) *TripleExponentialSmoothing {
+    t := &TripleExponentialSmoothing{}
+    t.l = l
     t.bufSize = 2*l
-    t.alpha = alpha
-    t.beta = beta
-    t.gamma = gamma
     t.st = make([]float64, t.bufSize)
     t.bt = make([]float64, t.bufSize)
     t.it = make([]float64, t.bufSize)
-    t.l = l
 
-    t.st[1] = t.y[0]
-    t.bt[1] = initialTrend(t.y, l)
-    t.initialSeasonalIndicies(t.y, l)
+    return t
+}
+
+func (t *TripleExponentialSmoothing) Train(y []float64, alpha, beta, gamma float64){
+    t.ylen = len(y)
+    t.ft = make([]float64, t.ylen + t.l)
+
+    t.st[1] = y[0]
+    t.bt[1] = initialTrend(y, t.l)
+    initialSeasonalIndicies(y, t.l, t.it)
 
     for i := 2; i < t.ylen; i++ {
         // overall smoothing
-        if (i - l) >= 0 {
-            t.st[i%t.bufSize] = alpha*y[i]/t.it[(i-l)%t.bufSize] + (1.0-alpha)*(t.st[(i-1)%t.bufSize]+t.bt[(i-1)%t.bufSize])
+        if (i - t.l) >= 0 {
+            t.st[i%t.bufSize] = alpha*y[i]/t.it[(i-t.l)%t.bufSize] + (1.0-alpha)*(t.st[(i-1)%t.bufSize]+t.bt[(i-1)%t.bufSize])
         } else {
             t.st[i] = alpha*y[i] + (1.0-alpha)*(t.st[(i-1)%t.bufSize]+t.bt[(i-1)%t.bufSize])
         }
@@ -70,9 +76,12 @@ func (t *TripleExponentialSmoothing) Train(y []float64, alpha, beta, gamma float
         t.bt[i%t.bufSize] = gamma*(t.st[i%t.bufSize]-t.st[(i-1)%t.bufSize]) + (1-gamma)*t.bt[(i-1)%t.bufSize]
 
         // seasonal smoothing
-        if (i - l) >= 0 {
-            t.it[i%t.bufSize] = beta*y[i]/t.st[i%t.bufSize] + (1.0-beta)*t.it[(i-l)%t.bufSize]
+        if (i - t.l) >= 0 {
+            t.it[i%t.bufSize] = beta*y[i]/t.st[i%t.bufSize] + (1.0-beta)*t.it[(i-t.l)%t.bufSize]
         }
+
+        // forecast
+        t.ft[i+t.l] = (t.st[i%t.bufSize] + (float64(t.l) * t.bt[i%t.bufSize])) * t.it[i%t.bufSize]
     }
 }
 
@@ -80,10 +89,106 @@ func (t *TripleExponentialSmoothing) Forecast(m int) []float64 {
     ft := make([]float64, m)
     for k := 0; k < m; k++ {
         i := t.ylen + k - m
-        ft[k] = (t.st[i%t.bufSize] + float64(m) * t.bt[i%t.bufSize]) * t.it[(i-t.l+m)%t.bufSize]
+        ft[k] = (t.st[i%t.bufSize] + (float64(t.l) * t.bt[i%t.bufSize])) * t.it[i%t.bufSize]
     }
 
     return ft
+}
+
+func try(y []float64, alpha, beta, gamma float64, l int) float64 {
+    ylen := len(y)
+    bufSize := 2*l
+    st := make([]float64, bufSize)
+    bt := make([]float64, bufSize)
+    it := make([]float64, bufSize)
+    ft := make([]float64, ylen + l)
+
+    st[1] = y[0]
+    bt[1] = initialTrend(y, l)
+    initialSeasonalIndicies(y, l, it)
+
+    for i := 2; i < ylen; i++ {
+        // overall smoothing
+        if (i - l) >= 0 {
+            st[i%bufSize] = alpha*y[i]/it[(i-l)%bufSize] + (1.0-alpha)*(st[(i-1)%bufSize]+bt[(i-1)%bufSize])
+        } else {
+            st[i] = alpha*y[i] + (1.0-alpha)*(st[(i-1)%bufSize]+bt[(i-1)%bufSize])
+        }
+
+        // trend smoothing
+        bt[i%bufSize] = gamma*(st[i%bufSize]-st[(i-1)%bufSize]) + (1-gamma)*bt[(i-1)%bufSize]
+
+        // seasonal smoothing
+        if (i - l) >= 0 {
+            it[i%bufSize] = beta*y[i]/st[i%bufSize] + (1.0-beta)*it[(i-l)%bufSize]
+        }
+
+        // forecast
+        ft[i+l] = (st[i%bufSize] + (float64(l) * bt[i%bufSize])) * it[i%bufSize]
+    }
+
+    return mse(y, ft, l)
+}
+
+func (t *TripleExponentialSmoothing)goTryBest(wg *sync.WaitGroup, y []float64, alpha, beta, gamma float64, l int) {
+    defer wg.Done()
+
+    mse := try(y, alpha, beta, gamma, l)
+    //log.Printf("goTryBest,alpha:%f,beta:%f,gamma:%f,mse:%f\n", alpha, beta, gamma, mse)
+    t.mu.Lock()
+    if mse < t.mse {
+        t.mse = mse
+        t.alpha = alpha
+        t.beta = beta
+        t.gamma = gamma
+    }
+    t.mu.Unlock()
+    //log.Printf("goTryBest,alpha:%f,beta:%f,gamma:%f,mse:%f\n", alpha, beta, gamma, mse)
+}
+
+//auto choose alpha, beta, gamma with tolerance
+func (t *TripleExponentialSmoothing) Fit(y []float64, tolerance float64){
+    alphaMin := float64(0)
+    alphaMax := float64(1)
+    betaMin := float64(0)
+    betaMax := float64(1)
+    gammaMin := float64(0)
+    gammaMax := float64(1)
+    currentTolerance := 0.1
+
+    for {
+        t.FindBest(y, alphaMin, alphaMax, betaMin, betaMax, gammaMin, gammaMax, currentTolerance)
+        if currentTolerance <= tolerance {
+            break
+        }
+
+        currentTolerance /= float64(10)
+        alphaMin = correctParam(t.alpha - currentTolerance)
+        alphaMax = correctParam(t.alpha + currentTolerance)
+        betaMin = correctParam(t.beta - currentTolerance)
+        betaMax = correctParam(t.beta + currentTolerance)
+        gammaMin = correctParam(t.gamma - currentTolerance)
+        gammaMax = correctParam(t.gamma + currentTolerance)
+    }
+
+    log.Printf("end fit with alpha:%f,beta:%f,gamma:%f,mse:%f\n", t.alpha, t.beta, t.gamma, t.mse)
+}
+
+func (t *TripleExponentialSmoothing) FindBest(y []float64, alphaMin, alphaMax, betaMin, betaMax, gammaMin, gammaMax, tolerance float64){
+    var wg sync.WaitGroup
+
+    t.mse = math.MaxFloat64
+    for alpha := alphaMin; alpha <= alphaMax; alpha += tolerance {
+        for beta := betaMin; beta <= betaMax; beta += tolerance {
+            for gamma := gammaMin; gamma <= gammaMax; gamma += tolerance {
+                wg.Add(1)
+                go t.goTryBest(&wg, y, alpha, beta, gamma, t.l)
+            }
+        }
+    }
+
+    wg.Wait()
+    log.Printf("FindBest,alpha:%f,beta:%f,gamma:%f,mse:%f\n", t.alpha, t.beta, t.gamma, t.mse)
 }
 
 // See: http://www.itl.nist.gov/div898/handbook/pmc/section4/pmc435.htm
@@ -98,7 +203,7 @@ func initialTrend(y []float64, l int) float64 {
 }
 
 // See: http://www.itl.nist.gov/div898/handbook/pmc/section4/pmc435.htm
-func (t *TripleExponentialSmoothing)initialSeasonalIndicies(y []float64, l int) {
+func initialSeasonalIndicies(y []float64, l int, it []float64) {
     seasons := len(y) / l
     seasonalAverage := make([]float64, seasons)
 
@@ -119,8 +224,29 @@ func (t *TripleExponentialSmoothing)initialSeasonalIndicies(y []float64, l int) 
 
     for i := 0; i < l; i++ {
         for j := 0; j < seasons; j++ {
-            t.it[i] += averagedObservations[(j*l)+i]
+            it[i] += averagedObservations[(j*l)+i]
         }
-        t.it[i] /= float64(seasons)
+        it[i] /= float64(seasons)
+    }
+}
+
+func mse(y []float64, ft []float64, l int) float64 {
+    sse := float64(0)
+    for i := l+2; i < len(y); i++ {
+        sse += (ft[i] - y[i])*(ft[i] - y[i])
+    }
+
+    mse := sse/float64(len(y) - l - 2)
+    //log.Printf("mse:%f\n", mse)
+    return mse
+}
+
+func correctParam(param float64) float64 {
+    if param < 0 {
+        return 0
+    }else if param > 1 {
+        return 1
+    } else {
+        return param
     }
 }

@@ -12,11 +12,11 @@ ${demo.css}
 $(function () {
     Highcharts.chart('container', {
         title: {
-            text: '事件预测',
+            text: 'estimate',
             x: -20 //center
         },
         subtitle: {
-            text: 'OMGPageResume',
+            text: '',
             x: -20
         },
         legend: {

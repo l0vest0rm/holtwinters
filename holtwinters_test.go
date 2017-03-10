@@ -63,19 +63,20 @@ func TestFit(t *testing.T) {
 }
 
 func TestRealFit(t *testing.T) {
-    y := ReadY("time_series1.csv")
+    y := ReadY("time_series2.csv")
     fmt.Printf("ylen:%d\n", len(y))
     l := 1440*7
     m := l
+    seasons := 3
     tolerance := float64(0.00001)
 
     this := NewTripleExponentialSmoothing(l)
-    this.Fit(y[:l*2], tolerance)
+    this.Fit(y[:l*seasons], tolerance)
 
-    this.Train(y, this.alpha, this.beta, this.gamma)
+    this.Train(y[:l*seasons], this.alpha, this.beta, this.gamma)
     prediction := this.Forecast(m)
 
-    render("index.tpl", "index.html", y[l*2:], prediction)
+    render("index.tpl", "index.html", y[l*seasons:], prediction)
 }
 
 func render(tplFile string, htmlFile string, real []float64, estimate []float64) {
